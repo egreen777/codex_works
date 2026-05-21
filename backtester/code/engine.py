@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import date
+
 from metrics import calculate_average_holding_period, calculate_cagr, calculate_max_drawdown
 from strategy import build_rebalance_schedule, evaluate_dual_momentum_target, evaluate_trend_following_signal
 
@@ -8,6 +10,7 @@ def run_backtest(
     strategy: str,
     aligned_history: list[dict],
     benchmark_history: list[dict],
+    effective_start_date: date,
     initial_capital: float,
     annual_contribution: float,
     trading_period: int,
@@ -16,17 +19,19 @@ def run_backtest(
     allocation_weights: dict[str, float] | None = None,
     dual_momentum_tickers: list[str] | None = None,
     bond_ticker: str | None = None,
-) -> tuple[list[dict], list[dict], dict]:
+) -> tuple[list[dict], list[dict], dict, list[str]]:
     if strategy == "trend_following":
-        strategy_rows = _run_trend_following(
+        strategy_rows, debug_events = _run_trend_following(
             aligned_history=aligned_history,
+            effective_start_date=effective_start_date,
             initial_capital=initial_capital,
             annual_contribution=annual_contribution,
             trading_period=trading_period,
         )
     elif strategy == "dual_momentum":
-        strategy_rows = _run_dual_momentum(
+        strategy_rows, debug_events = _run_dual_momentum(
             aligned_history=aligned_history,
+            effective_start_date=effective_start_date,
             initial_capital=initial_capital,
             annual_contribution=annual_contribution,
             trading_period=trading_period,
@@ -35,8 +40,9 @@ def run_backtest(
             bond_ticker=bond_ticker or "",
         )
     elif strategy == "asset_allocation":
-        strategy_rows = _run_asset_allocation(
+        strategy_rows, debug_events = _run_asset_allocation(
             aligned_history=aligned_history,
+            effective_start_date=effective_start_date,
             initial_capital=initial_capital,
             annual_contribution=annual_contribution,
             trading_period=trading_period,
@@ -48,6 +54,7 @@ def run_backtest(
 
     benchmark_rows = _run_buy_and_hold(
         benchmark_history=benchmark_history,
+        effective_start_date=effective_start_date,
         initial_capital=initial_capital,
         annual_contribution=annual_contribution,
     )
@@ -62,15 +69,16 @@ def run_backtest(
         annual_contribution=annual_contribution,
         benchmark_ticker=benchmark_ticker,
     )
-    return strategy_rows, yearly_summary, final_summary
+    return strategy_rows, yearly_summary, final_summary, debug_events
 
 
 def _run_trend_following(
     aligned_history: list[dict],
+    effective_start_date: date,
     initial_capital: float,
     annual_contribution: float,
     trading_period: int,
-) -> list[dict]:
+) -> tuple[list[dict], list[str]]:
     previous_price = None
     previous_year = None
     portfolio_value = initial_capital
@@ -78,44 +86,56 @@ def _run_trend_following(
     current_weight = 0.0
     recent_prices: list[float] = []
     results: list[dict] = []
+    debug_events: list[str] = []
 
     for index, row in enumerate(aligned_history):
         price = float(next(iter(row["prices"].values())))
-        if index > 0 and row["Date"].year != previous_year:
+        in_backtest = row["Date"] >= effective_start_date
+        if in_backtest and index > 0 and row["Date"].year != previous_year:
             portfolio_value += annual_contribution
 
-        asset_return = 0.0 if previous_price is None else price / previous_price - 1.0
-        strategy_return = current_weight * asset_return
-        growth_index *= 1.0 + strategy_return
-        portfolio_value *= 1.0 + strategy_return
+        if in_backtest:
+            asset_return = 0.0 if previous_price is None else price / previous_price - 1.0
+            strategy_return = current_weight * asset_return
+            growth_index *= 1.0 + strategy_return
+            portfolio_value *= 1.0 + strategy_return
 
         recent_prices.append(price)
         signal = evaluate_trend_following_signal(recent_prices, trading_period)
-        results.append(
-            {
-                "Date": row["Date"],
-                "portfolio_value": portfolio_value,
-                "growth_index": growth_index,
-                "position": current_weight > 0,
-            }
-        )
+        next_weight = 1.0 if signal else 0.0
+        if in_backtest and next_weight != current_weight:
+            action = "ENTER" if next_weight > current_weight else "EXIT"
+            debug_events.append(
+                f"{row['Date'].isoformat()} trend_following {action} price={price:.4f} "
+                f"trading_period={trading_period} cum_return={(growth_index - 1.0) * 100:.2f}%"
+            )
+        if in_backtest:
+            results.append(
+                {
+                    "Date": row["Date"],
+                    "portfolio_value": portfolio_value,
+                    "growth_index": growth_index,
+                    "position": current_weight > 0,
+                }
+            )
 
-        current_weight = 1.0 if signal else 0.0
+        current_weight = next_weight
         previous_price = price
         previous_year = row["Date"].year
 
-    return results
+    return results, debug_events
 
 
 def _run_dual_momentum(
     aligned_history: list[dict],
+    effective_start_date: date,
     initial_capital: float,
     annual_contribution: float,
     trading_period: int,
     rebalancing_period: str,
     dual_momentum_tickers: list[str],
     bond_ticker: str,
-) -> list[dict]:
+) -> tuple[list[dict], list[str]]:
     rebalancing_flags = build_rebalance_schedule(aligned_history, rebalancing_period)
     previous_prices: dict[str, float] | None = None
     previous_year = None
@@ -123,48 +143,66 @@ def _run_dual_momentum(
     growth_index = 1.0
     current_weights: dict[str, float] = {}
     results: list[dict] = []
+    debug_events: list[str] = []
 
     for index, row in enumerate(aligned_history):
-        if index > 0 and row["Date"].year != previous_year:
+        in_backtest = row["Date"] >= effective_start_date
+        if in_backtest and index > 0 and row["Date"].year != previous_year:
             portfolio_value += annual_contribution
 
-        asset_returns = _calculate_asset_returns(row["prices"], previous_prices)
-        strategy_return = _weighted_return(current_weights, asset_returns)
-        growth_index *= 1.0 + strategy_return
-        portfolio_value *= 1.0 + strategy_return
+        if in_backtest:
+            asset_returns = _calculate_asset_returns(row["prices"], previous_prices)
+            strategy_return = _weighted_return(current_weights, asset_returns)
+            growth_index *= 1.0 + strategy_return
+            portfolio_value *= 1.0 + strategy_return
 
-        results.append(
-            {
-                "Date": row["Date"],
-                "portfolio_value": portfolio_value,
-                "growth_index": growth_index,
-                "position": bool(current_weights),
-            }
-        )
+        if in_backtest:
+            results.append(
+                {
+                    "Date": row["Date"],
+                    "portfolio_value": portfolio_value,
+                    "growth_index": growth_index,
+                    "position": bool(current_weights),
+                }
+            )
 
         if rebalancing_flags[index]:
-            current_weights = evaluate_dual_momentum_target(
+            previous_selection = _selected_asset_name(current_weights)
+            current_weights, decision = evaluate_dual_momentum_target(
                 rows=aligned_history,
                 index=index,
                 trading_period=trading_period,
                 risk_tickers=dual_momentum_tickers,
                 bond_ticker=bond_ticker,
             )
+            momentum = decision["momentum"]
+            momentum_text = ", ".join(
+                f"{ticker}={float(value) * 100:.2f}%"
+                for ticker, value in momentum.items()
+            )
+            selected = decision.get("selected", "NON")
+            debug_events.append(
+                f"{row['Date'].isoformat()} dual_momentum sel={previous_selection}->{selected} "
+                f"decision={decision['decision']} trad_p={trading_period} "
+                f"rebal_p={rebalancing_period} cum_return={(growth_index - 1.0) * 100:.2f}% "
+                f"momentum[{momentum_text}]"
+            )
 
         previous_prices = row["prices"]
         previous_year = row["Date"].year
 
-    return results
+    return results, debug_events
 
 
 def _run_asset_allocation(
     aligned_history: list[dict],
+    effective_start_date: date,
     initial_capital: float,
     annual_contribution: float,
     trading_period: int,
     rebalancing_period: str,
     allocation_weights: dict[str, float],
-) -> list[dict]:
+) -> tuple[list[dict], list[str]]:
     rebalancing_flags = build_rebalance_schedule(aligned_history, rebalancing_period)
     previous_prices: dict[str, float] | None = None
     previous_year = None
@@ -172,36 +210,47 @@ def _run_asset_allocation(
     growth_index = 1.0
     current_weights: dict[str, float] = {}
     results: list[dict] = []
+    debug_events: list[str] = []
 
     for index, row in enumerate(aligned_history):
-        if index > 0 and row["Date"].year != previous_year:
+        in_backtest = row["Date"] >= effective_start_date
+        if in_backtest and index > 0 and row["Date"].year != previous_year:
             portfolio_value += annual_contribution
 
-        asset_returns = _calculate_asset_returns(row["prices"], previous_prices)
-        strategy_return = _weighted_return(current_weights, asset_returns)
-        growth_index *= 1.0 + strategy_return
-        portfolio_value *= 1.0 + strategy_return
+        if in_backtest:
+            asset_returns = _calculate_asset_returns(row["prices"], previous_prices)
+            strategy_return = _weighted_return(current_weights, asset_returns)
+            growth_index *= 1.0 + strategy_return
+            portfolio_value *= 1.0 + strategy_return
 
-        results.append(
-            {
-                "Date": row["Date"],
-                "portfolio_value": portfolio_value,
-                "growth_index": growth_index,
-                "position": bool(current_weights),
-            }
-        )
+        if in_backtest:
+            results.append(
+                {
+                    "Date": row["Date"],
+                    "portfolio_value": portfolio_value,
+                    "growth_index": growth_index,
+                    "position": bool(current_weights),
+                }
+            )
 
         if index >= trading_period - 1 and (index == trading_period - 1 or rebalancing_flags[index]):
             current_weights = dict(allocation_weights)
+            weights_text = ", ".join(f"{ticker}={weight * 100:.2f}%" for ticker, weight in current_weights.items())
+            debug_events.append(
+                f"{row['Date'].isoformat()} asset_allocation trad_p={trading_period} "
+                f"rebal_p={rebalancing_period} cum_return={(growth_index - 1.0) * 100:.2f}% "
+                f"weights[{weights_text}]"
+            )
 
         previous_prices = row["prices"]
         previous_year = row["Date"].year
 
-    return results
+    return results, debug_events
 
 
 def _run_buy_and_hold(
     benchmark_history: list[dict],
+    effective_start_date: date,
     initial_capital: float,
     annual_contribution: float,
 ) -> list[dict]:
@@ -213,21 +262,24 @@ def _run_buy_and_hold(
 
     for index, row in enumerate(benchmark_history):
         price = float(next(iter(row["prices"].values())))
-        if index > 0 and row["Date"].year != previous_year:
+        in_backtest = row["Date"] >= effective_start_date
+        if in_backtest and index > 0 and row["Date"].year != previous_year:
             portfolio_value += annual_contribution
 
-        benchmark_return = 0.0 if previous_price is None else price / previous_price - 1.0
-        growth_index *= 1.0 + benchmark_return
-        portfolio_value *= 1.0 + benchmark_return
+        if in_backtest:
+            benchmark_return = 0.0 if previous_price is None else price / previous_price - 1.0
+            growth_index *= 1.0 + benchmark_return
+            portfolio_value *= 1.0 + benchmark_return
 
-        results.append(
-            {
-                "Date": row["Date"],
-                "portfolio_value": portfolio_value,
-                "growth_index": growth_index,
-                "position": True,
-            }
-        )
+        if in_backtest:
+            results.append(
+                {
+                    "Date": row["Date"],
+                    "portfolio_value": portfolio_value,
+                    "growth_index": growth_index,
+                    "position": True,
+                }
+            )
 
         previous_price = price
         previous_year = row["Date"].year
@@ -323,3 +375,9 @@ def _calculate_asset_returns(current_prices: dict[str, float], previous_prices: 
 
 def _weighted_return(weights: dict[str, float], asset_returns: dict[str, float]) -> float:
     return sum(weights.get(ticker, 0.0) * asset_returns.get(ticker, 0.0) for ticker in asset_returns)
+
+
+def _selected_asset_name(weights: dict[str, float]) -> str:
+    if not weights:
+        return "CAS"
+    return max(weights, key=weights.get)
