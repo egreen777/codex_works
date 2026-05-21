@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import argparse
 import sys
+from datetime import date
+from datetime import datetime
+from datetime import timedelta
 from pathlib import Path
 
 from config import (
@@ -108,16 +111,24 @@ def main(project_root: Path | None = None) -> None:
         rule_code = f"asset_allocation_{args.trading_period}d_{args.rebalancing_period}"
 
     benchmark_needed = sorted(set(strategy_tickers + [benchmark_ticker]))
+    requested_start_date = date.fromisoformat(args.start)
+    fetch_start_date = requested_start_date - timedelta(days=365)
     aligned_histories = align_price_histories(
-        load_price_histories(data_dir=data_dir, tickers=benchmark_needed, start=args.start, end=args.end)
+        load_price_histories(
+            data_dir=data_dir,
+            tickers=benchmark_needed,
+            start=fetch_start_date.isoformat(),
+            end=args.end,
+        )
     )
     strategy_history = _subset_aligned_history(aligned_histories, strategy_tickers)
     benchmark_history = _subset_aligned_history(aligned_histories, [benchmark_ticker])
 
-    _, yearly_summary, final_summary = run_backtest(
+    _, yearly_summary, final_summary, debug_events = run_backtest(
         strategy=strategy,
         aligned_history=strategy_history,
         benchmark_history=benchmark_history,
+        effective_start_date=requested_start_date,
         initial_capital=args.initial_capital,
         annual_contribution=args.annual_contribution,
         trading_period=args.trading_period,
@@ -149,6 +160,21 @@ def main(project_root: Path | None = None) -> None:
     report_lines.extend(["", render_yearly_performance(yearly_summary), "", render_final_performance(final_summary)])
     report_text = "\n".join(report_lines)
     print(report_text)
+    write_backtest_log(
+        output_dir=output_dir,
+        strategy=strategy,
+        start=args.start,
+        end=args.end,
+        assets=display_assets,
+        benchmark_ticker=benchmark_ticker,
+        trading_period=args.trading_period,
+        rebalancing_period=args.rebalancing_period if strategy != "trend_following" else None,
+        initial_capital=args.initial_capital,
+        annual_contribution=args.annual_contribution,
+        ignored_messages=ignored_messages,
+        final_summary=final_summary,
+        debug_events=debug_events,
+    )
 
     if args.save_report:
         target = output_dir / args.save_report
@@ -268,3 +294,73 @@ def _subset_aligned_history(rows: list[dict], tickers: list[str]) -> list[dict]:
         }
         for row in rows
     ]
+
+
+def write_backtest_log(
+    output_dir: Path,
+    strategy: str,
+    start: str,
+    end: str,
+    assets: str,
+    benchmark_ticker: str,
+    trading_period: int,
+    rebalancing_period: str | None,
+    initial_capital: float,
+    annual_contribution: float,
+    ignored_messages: list[str],
+    final_summary: dict,
+    debug_events: list[str],
+) -> None:
+    log_path = output_dir / "backtest.log"
+    timestamp = datetime.now().isoformat(timespec="seconds")
+    debug_block = _insert_backtest_markers(debug_events, start)
+    lines = [
+        f"[{timestamp}] strategy={strategy} period={start}->{end}",
+        f"assets={assets}",
+        f"benchmark={benchmark_ticker}",
+        f"trading_period={trading_period}",
+        f"rebalancing_period={rebalancing_period or 'n/a'}",
+        f"initial_capital={initial_capital:.2f}",
+        f"annual_contribution={annual_contribution:.2f}",
+        f"ending_value={float(final_summary['ending_value']):.2f}",
+        f"cumulative_return={float(final_summary['cumulative_return']) * 100:.2f}%",
+        f"overall_mdd={float(final_summary['overall_mdd']) * 100:.2f}%",
+    ]
+    for message in ignored_messages:
+        lines.append(f"ignored={message}")
+    if debug_block:
+        lines.append("events:")
+        lines.extend(f"  {event}" for event in debug_block)
+    lines.append("")
+    with log_path.open("a", encoding="utf-8") as handle:
+        handle.write("\n".join(lines))
+
+
+def _insert_backtest_markers(debug_events: list[str], start: str) -> list[str]:
+    if not debug_events:
+        return []
+
+    start_date = date.fromisoformat(start)
+    marked: list[str] = []
+    start_inserted = False
+
+    for event in debug_events:
+        event_date = _extract_event_date(event)
+        if not start_inserted and event_date is not None and event_date >= start_date:
+            marked.append("--- start ---")
+            start_inserted = True
+        marked.append(event)
+
+    if not start_inserted:
+        marked.append("--- start ---")
+    marked.append("--- end ---")
+    return marked
+
+
+def _extract_event_date(event: str) -> date | None:
+    if len(event) < 10:
+        return None
+    try:
+        return date.fromisoformat(event[:10])
+    except ValueError:
+        return None

@@ -31,9 +31,9 @@ def evaluate_dual_momentum_target(
     trading_period: int,
     risk_tickers: list[str],
     bond_ticker: str,
-) -> dict[str, float]:
+) -> tuple[dict[str, float], dict[str, float | str | dict[str, float]]]:
     if index < trading_period:
-        return {}
+        return {}, {"decision": "insufficient", "momentum": {}}
 
     momentum = {
         ticker: rows[index]["prices"][ticker] / rows[index - trading_period]["prices"][ticker] - 1.0
@@ -44,8 +44,16 @@ def evaluate_dual_momentum_target(
     best_risk_return = risk_momentum[best_risk_ticker]
     bond_return = momentum[bond_ticker]
 
+    if best_risk_return < 0.0 and bond_return < 0.0:
+        return {}, {"decision": "cash", "selected": "CAS", "momentum": momentum}
     if best_risk_return > bond_return:
-        return {best_risk_ticker: 1.0}
+        return (
+            {best_risk_ticker: 1.0},
+            {"decision": "risk_asset", "selected": best_risk_ticker, "momentum": momentum},
+        )
     if bond_return >= 0.0:
-        return {bond_ticker: 1.0}
-    return {}
+        return (
+            {bond_ticker: 1.0},
+            {"decision": "bond_asset", "selected": bond_ticker, "momentum": momentum},
+        )
+    return {}, {"decision": "cash", "selected": "CAS", "momentum": momentum}

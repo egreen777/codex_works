@@ -1,44 +1,87 @@
-# Strategy Definitions
+# Investment Strategy Details
 
-## Shared Parameters
+이 문서는 백테스터가 구현하거나 구현 예정인 투자 전략의 투자 아이디어와 판단 규칙을 정리한다.  
+개발 방법, 데이터 로딩, 로그 형식, CLI 규칙은 `build.md`에서 관리한다.
 
-- `--trading-period`: trading-day based period
-- Meaning in trend following: moving-average length
-- Meaning in dual momentum: price lookback window for momentum comparison
-- Meaning in asset allocation: price lookback window used for allocation decisions
-- `--rebalancing-period`: calendar-based rebalance schedule
-- Supported values: `1m`, `3m`, `6m`, `9m`, `1y`
-- Execution day: the last trading day of the selected calendar period
-- If a selected strategy does not use this parameter, the tool reports that it was ignored
+## Shared Concepts
+
+- `trading-period`
+  - 거래일 기준 판단 기간
+  - 추세추종에서는 이동평균 기간
+  - 듀얼 모멘텀에서는 모멘텀 비교 기간
+  - 자산배분에서는 판단용 가격 관찰 기간
+
+- `rebalancing-period`
+  - 캘린더 기준 리밸런싱 주기
+  - 지원값: `1m`, `3m`, `6m`, `9m`, `1y`
+  - 실제 실행일은 해당 기간의 마지막 거래일
 
 ## Trend Following
 
-- Scope: first implemented strategy
-- Uses `--trading-period`
-- Does not use `--rebalancing-period`
-- Rule: buy when the adjusted close is above the moving average defined by `--trading-period`
-- Exit: move to cash when the adjusted close is at or below that moving average
-- Execution timing: generate the signal at today's close and apply the position on the next trading day
-- Universe: single ETF in the first version
+- 목적
+  - 단일 ETF의 상승 추세만 추종하고 하락 구간은 현금으로 회피
+
+- 투자 대상
+  - 첫 버전에서는 ETF 1개
+
+- 판단 규칙
+  - `Adj Close > trading-period 이동평균`이면 보유
+  - `Adj Close <= trading-period 이동평균`이면 현금
+
+- 실행 규칙
+  - 오늘 종가로 신호를 계산
+  - 다음 거래일부터 포지션 반영
+
+- 비고
+  - 이 전략은 `rebalancing-period`를 사용하지 않는다
 
 ## Dual Momentum
 
-- Scope: implemented strategy
-- Uses `--trading-period` as momentum lookback window
-- Uses `--rebalancing-period` as rebalance schedule
-- Input format: `--tickers QQQ:30,VOO:20 --bond-ticker IEF:50`
-- Weight note: weights in the input are accepted for a consistent CLI shape, but this strategy currently invests 100% in one selected asset at a time
-- Rule: compare two equity assets and choose the one with stronger momentum when it is stronger than the bond proxy
-- Fallback: if both equity assets are weaker than the bond proxy, hold the bond asset
-- Cash condition: if both equity assets and the bond proxy are negative, hold cash
+- 목적
+  - 2개의 위험자산 중 상대적으로 강한 자산을 선택하되, 채권보다 약하면 방어적으로 이동
+
+- 투자 대상
+  - 위험자산 2개
+  - 채권자산 1개
+
+- 판단 규칙
+  - 리밸런싱 시점마다 `trading-period` 수익률을 계산
+  - 위험자산 2개 중 수익률이 더 높은 자산을 찾음
+  - 그 자산의 수익률이 채권 수익률보다 높으면 그 위험자산 보유
+  - 위험자산 2개가 모두 채권보다 낮으면 채권 보유
+  - 위험자산과 채권이 모두 음수면 현금 보유
+
+- 실행 규칙
+  - 지정한 `rebalancing-period`의 마지막 거래일에만 자산 교체
+  - 각 시점에는 1개 자산만 100% 보유하거나, 조건이 나쁘면 현금 보유
+
+- 입력 형태
+  - 예: `--tickers QQQ:30,VOO:20 --bond-ticker IEF:50`
+
+- 비고
+  - 현재 구현에서는 비중 입력을 받아도 실제 자산 선택에는 사용하지 않는다
+  - 비중은 CLI 입력 형식을 통일하기 위한 표기다
 
 ## Asset Allocation
 
-- Scope: implemented strategy
-- Uses `--trading-period` as price evaluation window
-- Uses `--rebalancing-period` as rebalance schedule
-- Input format: `--tickers QQQ:40,VOO:25 --bond-ticker IEF`
-- Rule: choose one equity asset, one bond asset, and one alternative asset, then buy by target weights
-- Default weighting: use equal weight when no explicit ratio is provided
-- Remaining weight rule: if some weights are missing, the remaining percentage is distributed equally across the unspecified assets
-- Rebalance timing: rebalance back to the target weights on the last trading day of each selected calendar period
+- 목적
+  - 여러 자산을 목표 비중으로 보유하고 주기적으로 원래 비중으로 복원
+
+- 투자 대상
+  - 주식 자산 1개 이상
+  - 채권 자산 1개
+  - 필요하면 기타 자산 포함
+
+- 판단 규칙
+  - 자산별 목표 비중을 먼저 정함
+  - 비중이 일부만 입력되면 남는 비중은 미지정 자산에 균등 배분
+
+- 실행 규칙
+  - 지정한 `rebalancing-period`의 마지막 거래일에 목표 비중으로 리밸런싱
+
+- 입력 형태
+  - 예: `--tickers QQQ:40,VOO:25 --bond-ticker IEF`
+
+- 비고
+  - 현재 구현은 목표 비중 복원형 전략이다
+  - 향후 `trading-period`를 사용한 더 정교한 판단 규칙으로 확장 가능하다
