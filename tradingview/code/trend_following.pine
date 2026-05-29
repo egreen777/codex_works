@@ -1,0 +1,52 @@
+//@version=6
+strategy("ETF Trend Following", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, pyramiding=0)
+
+tradingPeriod = input.int(120, "Trading Period", minval=1)
+showSignals = input.bool(true, "Show Signals")
+showStatus = input.bool(true, "Show Status Table")
+
+ma = ta.sma(close, tradingPeriod)
+isReady = not na(ma)
+isLongSignal = isReady and close > ma
+isCashSignal = isReady and close <= ma
+
+enteredLong = isLongSignal and not isLongSignal[1]
+enteredCash = isCashSignal and not isCashSignal[1]
+
+if isLongSignal
+    strategy.entry("LONG", strategy.long)
+else if isCashSignal
+    strategy.close("LONG")
+
+plot(ma, "Trading Period MA", color=color.orange, linewidth=2)
+
+plotshape(showSignals and enteredLong, title="Long Signal", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, text="LONG")
+plotshape(showSignals and enteredCash, title="Cash Signal", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, text="CASH")
+
+if showSignals and (enteredLong or enteredCash)
+    signalText = enteredLong ? "LONG" : "CASH"
+    labelColor = enteredLong ? color.green : color.red
+    labelStyle = enteredLong ? label.style_label_up : label.style_label_down
+    labelY = enteredLong ? low : high
+    label.new(
+         bar_index,
+         labelY,
+         signalText + "\nprice=" + str.tostring(close, format.mintick) + "\nma=" + str.tostring(ma, format.mintick) + "\ntrad_p=" + str.tostring(tradingPeriod),
+         style=labelStyle,
+         color=labelColor,
+         textcolor=color.white,
+         size=size.small
+    )
+
+var table statusTable = table.new(position.top_right, 2, 4, border_width=1)
+
+if showStatus and barstate.islast
+    status = isLongSignal ? "LONG" : "CASH"
+    table.cell(statusTable, 0, 0, "Strategy", text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 0, "trend_following")
+    table.cell(statusTable, 0, 1, "Status", text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 1, status)
+    table.cell(statusTable, 0, 2, "trad_p", text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 2, str.tostring(tradingPeriod))
+    table.cell(statusTable, 0, 3, "MA", text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 3, na(ma) ? "N/A" : str.tostring(ma, format.mintick))
