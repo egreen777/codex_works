@@ -1,0 +1,107 @@
+//@version=6
+strategy("ETF Dual Momentum", overlay=true, default_qty_type=strategy.percent_of_equity, default_qty_value=100, pyramiding=0)
+
+riskAsset1 = input.symbol("NASDAQ:QQQ", "Risk Asset 1")
+riskAsset2 = input.symbol("AMEX:VOO", "Risk Asset 2")
+bondAsset = input.symbol("NASDAQ:IEF", "Bond Asset")
+tradingPeriod = input.int(120, "Trading Period", minval=1)
+rebalancingPeriod = input.string("3m", "Rebalancing Period", options=["1m", "3m", "6m", "9m", "1y"])
+showRebalanceLabels = input.bool(true, "Show Rebalance Labels")
+showStatus = input.bool(true, "Show Status Table")
+
+riskClose1 = request.security(riskAsset1, "D", close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+riskClose2 = request.security(riskAsset2, "D", close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+bondClose = request.security(bondAsset, "D", close, gaps=barmerge.gaps_off, lookahead=barmerge.lookahead_off)
+
+momentum(series float source, int period, int shift) =>
+    base = source[period + shift]
+    current = source[shift]
+    na(base) or na(current) or base == 0.0 ? na : current / base - 1.0
+
+formatPercent(float value) =>
+    na(value) ? "N/A" : str.tostring(value * 100.0, "#.##") + "%"
+
+shortSymbol(string tickerId) =>
+    parts = str.split(tickerId, ":")
+    array.size(parts) > 1 ? array.get(parts, 1) : tickerId
+
+monthChanged = month != month[1] or year != year[1]
+previousMonth = month[1]
+
+isRebalance =
+     switch rebalancingPeriod
+        "1m" => monthChanged
+        "3m" => monthChanged and (previousMonth == 3 or previousMonth == 6 or previousMonth == 9 or previousMonth == 12)
+        "6m" => monthChanged and (previousMonth == 6 or previousMonth == 12)
+        "9m" => monthChanged and previousMonth == 9
+        "1y" => monthChanged and previousMonth == 12
+        => false
+
+riskMom1 = momentum(riskClose1, tradingPeriod, 1)
+riskMom2 = momentum(riskClose2, tradingPeriod, 1)
+bondMom = momentum(bondClose, tradingPeriod, 1)
+
+var string selectedAsset = "CASH"
+var string previousAsset = "CASH"
+var string decision = "waiting"
+
+if isRebalance
+    previousAsset := selectedAsset
+    hasData = not na(riskMom1) and not na(riskMom2) and not na(bondMom)
+    if not hasData
+        selectedAsset := "CASH"
+        decision := "insufficient_history"
+    else
+        bestRiskSymbol = riskMom1 >= riskMom2 ? riskAsset1 : riskAsset2
+        bestRiskMom = riskMom1 >= riskMom2 ? riskMom1 : riskMom2
+        if bestRiskMom < 0.0 and bondMom < 0.0
+            selectedAsset := "CASH"
+            decision := "cash"
+        else if bestRiskMom > bondMom
+            selectedAsset := bestRiskSymbol
+            decision := "risk_asset"
+        else
+            selectedAsset := bondAsset
+            decision := "bond_asset"
+
+currentChartIsSelected = syminfo.tickerid == selectedAsset
+
+if currentChartIsSelected
+    strategy.entry("LONG", strategy.long)
+else
+    strategy.close("LONG")
+
+plotshape(isRebalance, title="Rebalance Date", style=shape.circle, location=location.top, color=color.blue, size=size.tiny, text="R", offset=-1)
+plotshape(isRebalance and currentChartIsSelected, title="Selected Current Chart", style=shape.triangleup, location=location.belowbar, color=color.green, size=size.small, text="LONG")
+plotshape(isRebalance and not currentChartIsSelected, title="Not Selected", style=shape.triangledown, location=location.abovebar, color=color.red, size=size.small, text="FLAT")
+
+if showRebalanceLabels and isRebalance
+    label.new(
+         bar_index - 1,
+         high[1],
+         "rebalance\nsel=" + shortSymbol(previousAsset) + "->" + shortSymbol(selectedAsset) + "\ndecision=" + decision + "\ntrad_p=" + str.tostring(tradingPeriod) + "\nrebal_p=" + rebalancingPeriod + "\n" + shortSymbol(riskAsset1) + "=" + formatPercent(riskMom1) + "\n" + shortSymbol(riskAsset2) + "=" + formatPercent(riskMom2) + "\n" + shortSymbol(bondAsset) + "=" + formatPercent(bondMom),
+         style=label.style_label_down,
+         color=color.blue,
+         textcolor=color.white,
+         size=size.small
+    )
+
+var table statusTable = table.new(position.top_right, 2, 8, border_width=1)
+
+if showStatus and barstate.islast
+    table.cell(statusTable, 0, 0, "Strategy", text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 0, "dual_momentum")
+    table.cell(statusTable, 0, 1, "Selected", text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 1, shortSymbol(selectedAsset))
+    table.cell(statusTable, 0, 2, "Decision", text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 2, decision)
+    table.cell(statusTable, 0, 3, "trad_p", text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 3, str.tostring(tradingPeriod))
+    table.cell(statusTable, 0, 4, "rebal_p", text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 4, rebalancingPeriod)
+    table.cell(statusTable, 0, 5, shortSymbol(riskAsset1), text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 5, formatPercent(momentum(riskClose1, tradingPeriod, 0)))
+    table.cell(statusTable, 0, 6, shortSymbol(riskAsset2), text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 6, formatPercent(momentum(riskClose2, tradingPeriod, 0)))
+    table.cell(statusTable, 0, 7, shortSymbol(bondAsset), text_color=color.white, bgcolor=color.gray)
+    table.cell(statusTable, 1, 7, formatPercent(momentum(bondClose, tradingPeriod, 0)))

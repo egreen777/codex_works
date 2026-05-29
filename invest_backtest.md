@@ -7,6 +7,7 @@
 - 이 문서는 이후 작업 방향을 결정하는 기준 문서로 유지한다.
 
 ## 관련 md파일의 역할
+1. backtester : python기반의 backtesting tool 개발 
 - `backtester/README.md`
   - 사용자가 기능을 실행할 때 보는 사용 가이드
   - 실행 방법, 옵션, 출력 결과를 설명
@@ -19,6 +20,18 @@
 - `invest_backtest.md`
   - 사용자가 작업 지침을 정리하는 상위 가이드
   - 전략 방향과 개발 방향을 함께 지시하는 기준 문서
+
+2. tradingview : backtester에서 만든 전략을 TradingView 기반의 pine script로 개발 
+- 주의: backtester/strategy.md 파일을 참고하여 만들며, strategy.md 파일은 수정하면 안됨.
+- `tradingview/README.md`
+  - 사용자가 기능을 실행할 때 보는 사용 가이드
+  - 실행 방법, 옵션, 출력 결과를 설명
+- `tradingview/strategy.md`
+  - backtester/strategy.md 파일을 기반. Tradingview환경에 맞춘 투자전략의 상세 규칙을 정리 
+  - 전략별 판단 규칙, 투자 대상, 리밸런싱 규칙을 관리
+  - Python 백테스터와 다른 점은 `[Pine script 차이점]` 섹션에 정리
+- `tradingview/pine_build.md`
+  - tradingview/strategy.md 에서 정의한 투자전략에 대한 Tradingview환경에 맞춘 구현 지침을 정리
 
 ## 전략수립 가이드라인
 1. 목표를 먼저 정하기
